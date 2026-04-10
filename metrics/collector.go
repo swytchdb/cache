@@ -1,0 +1,329 @@
+/*
+ * Copyright 2026 Swytch Labs BV
+ *
+ * This file is part of Swytch.
+ *
+ * Swytch is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of
+ * the License, or (at your option) any later version.
+ *
+ * Swytch is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Swytch. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package metrics
+
+import (
+	"strconv"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// StatsProvider defines the interface for retrieving server statistics.
+// Both Redis and Memcached servers implement this interface via adapters.
+type StatsProvider interface {
+	// Subsystem returns the metrics subsystem name ("redis" or "memcached")
+	Subsystem() string
+
+	// Connection stats
+	CurrentConnections() int64
+	TotalConnections() uint64
+
+	// Command stats
+	CommandCounts() map[string]uint64
+
+	// Cache stats
+	CacheHits() uint64
+	CacheMisses() uint64
+	HitRate() float64
+	Evictions() uint64
+	ItemCount() int
+	MemoryBytes() int64
+	MaxMemoryBytes() int64
+
+	// Latency stats (in seconds)
+	GetLatencyP50() float64
+	GetLatencyP99() float64
+	SetLatencyP50() float64
+	SetLatencyP99() float64
+	CmdLatencyP50() float64
+	CmdLatencyP99() float64
+
+	// Adaptive K threshold per shard
+	AdaptiveKThresholds() map[int]int32
+
+	// Network stats
+	BytesRead() uint64
+	BytesWritten() uint64
+
+	// Uptime
+	UptimeSeconds() float64
+
+	// Server-specific stats (optional - can return nil if not applicable)
+	// Redis-specific
+	BlockedClients() int64
+	CommandErrors() map[string]uint64
+
+	// Memcached-specific
+	CasHits() uint64
+	CasMisses() uint64
+	DeleteHits() uint64
+	DeleteMisses() uint64
+}
+
+// Collector implements prometheus.Collector to expose metrics on scrape.
+type Collector struct {
+	provider StatsProvider
+
+	// Descriptors
+	connectionsCurrent *prometheus.Desc
+	connectionsTotal   *prometheus.Desc
+	commandsTotal      *prometheus.Desc
+	cacheHitsTotal     *prometheus.Desc
+	cacheMissesTotal   *prometheus.Desc
+	cacheHitRate       *prometheus.Desc
+	evictionsTotal     *prometheus.Desc
+	itemsCount         *prometheus.Desc
+	memoryBytes        *prometheus.Desc
+	memoryMaxBytes     *prometheus.Desc
+	latencySeconds     *prometheus.Desc
+	adaptiveKThreshold *prometheus.Desc
+	bytesReadTotal     *prometheus.Desc
+	bytesWrittenTotal  *prometheus.Desc
+	uptimeSeconds      *prometheus.Desc
+
+	// Redis-specific
+	blockedClients     *prometheus.Desc
+	commandErrorsTotal *prometheus.Desc
+
+	// Memcached-specific
+	casHitsTotal      *prometheus.Desc
+	casMissesTotal    *prometheus.Desc
+	deleteHitsTotal   *prometheus.Desc
+	deleteMissesTotal *prometheus.Desc
+}
+
+// NewCollector creates a new Prometheus collector for the given stats provider.
+func NewCollector(provider StatsProvider) *Collector {
+	subsystem := provider.Subsystem()
+	namespace := "swytch"
+
+	c := &Collector{
+		provider: provider,
+
+		connectionsCurrent: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "connections_current"),
+			"Current number of client connections",
+			nil, nil,
+		),
+		connectionsTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "connections_total"),
+			"Total number of client connections since server start",
+			nil, nil,
+		),
+		commandsTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "commands_total"),
+			"Total commands processed by type",
+			[]string{"command"}, nil,
+		),
+		cacheHitsTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "cache_hits_total"),
+			"Total cache hits",
+			nil, nil,
+		),
+		cacheMissesTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "cache_misses_total"),
+			"Total cache misses",
+			nil, nil,
+		),
+		cacheHitRate: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "cache_hit_rate"),
+			"Cache hit rate (0-1)",
+			nil, nil,
+		),
+		evictionsTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "evictions_total"),
+			"Total cache evictions",
+			nil, nil,
+		),
+		itemsCount: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "items_count"),
+			"Current number of items in cache",
+			nil, nil,
+		),
+		memoryBytes: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "memory_bytes"),
+			"Current memory used by cache in bytes",
+			nil, nil,
+		),
+		memoryMaxBytes: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "memory_max_bytes"),
+			"Maximum memory configured for cache in bytes",
+			nil, nil,
+		),
+		latencySeconds: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "latency_seconds"),
+			"Operation latency in seconds",
+			[]string{"operation", "quantile"}, nil,
+		),
+		adaptiveKThreshold: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "adaptive_k_threshold"),
+			"Adaptive K threshold per shard",
+			[]string{"shard"}, nil,
+		),
+		bytesReadTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "bytes_read_total"),
+			"Total bytes read from network",
+			nil, nil,
+		),
+		bytesWrittenTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "bytes_written_total"),
+			"Total bytes written to network",
+			nil, nil,
+		),
+		uptimeSeconds: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "uptime_seconds"),
+			"Server uptime in seconds",
+			nil, nil,
+		),
+
+		// Redis-specific
+		blockedClients: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "blocked_clients"),
+			"Number of clients blocked on BLPOP, BRPOP, etc.",
+			nil, nil,
+		),
+		commandErrorsTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "command_errors_total"),
+			"Total command errors by type",
+			[]string{"command"}, nil,
+		),
+
+		// Memcached-specific
+		casHitsTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "cas_hits_total"),
+			"Total CAS command hits",
+			nil, nil,
+		),
+		casMissesTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "cas_misses_total"),
+			"Total CAS command misses",
+			nil, nil,
+		),
+		deleteHitsTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "delete_hits_total"),
+			"Total DELETE command hits",
+			nil, nil,
+		),
+		deleteMissesTotal: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, subsystem, "delete_misses_total"),
+			"Total DELETE command misses",
+			nil, nil,
+		),
+	}
+
+	return c
+}
+
+// Describe implements prometheus.Collector.
+func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.connectionsCurrent
+	ch <- c.connectionsTotal
+	ch <- c.commandsTotal
+	ch <- c.cacheHitsTotal
+	ch <- c.cacheMissesTotal
+	ch <- c.cacheHitRate
+	ch <- c.evictionsTotal
+	ch <- c.itemsCount
+	ch <- c.memoryBytes
+	ch <- c.memoryMaxBytes
+	ch <- c.latencySeconds
+	ch <- c.adaptiveKThreshold
+	ch <- c.bytesReadTotal
+	ch <- c.bytesWrittenTotal
+	ch <- c.uptimeSeconds
+
+	// Redis-specific
+	if c.provider.Subsystem() == "redis" {
+		ch <- c.blockedClients
+		ch <- c.commandErrorsTotal
+	}
+
+	// Memcached-specific
+	if c.provider.Subsystem() == "memcached" {
+		ch <- c.casHitsTotal
+		ch <- c.casMissesTotal
+		ch <- c.deleteHitsTotal
+		ch <- c.deleteMissesTotal
+	}
+
+}
+
+// Collect implements prometheus.Collector.
+func (c *Collector) Collect(ch chan<- prometheus.Metric) {
+	// Connection stats
+	ch <- prometheus.MustNewConstMetric(c.connectionsCurrent, prometheus.GaugeValue, float64(c.provider.CurrentConnections()))
+	ch <- prometheus.MustNewConstMetric(c.connectionsTotal, prometheus.CounterValue, float64(c.provider.TotalConnections()))
+
+	// Command stats
+	for cmd, count := range c.provider.CommandCounts() {
+		ch <- prometheus.MustNewConstMetric(c.commandsTotal, prometheus.CounterValue, float64(count), cmd)
+	}
+
+	// Cache stats
+	ch <- prometheus.MustNewConstMetric(c.cacheHitsTotal, prometheus.CounterValue, float64(c.provider.CacheHits()))
+	ch <- prometheus.MustNewConstMetric(c.cacheMissesTotal, prometheus.CounterValue, float64(c.provider.CacheMisses()))
+	ch <- prometheus.MustNewConstMetric(c.cacheHitRate, prometheus.GaugeValue, c.provider.HitRate())
+	ch <- prometheus.MustNewConstMetric(c.evictionsTotal, prometheus.CounterValue, float64(c.provider.Evictions()))
+	ch <- prometheus.MustNewConstMetric(c.itemsCount, prometheus.GaugeValue, float64(c.provider.ItemCount()))
+	ch <- prometheus.MustNewConstMetric(c.memoryBytes, prometheus.GaugeValue, float64(c.provider.MemoryBytes()))
+	ch <- prometheus.MustNewConstMetric(c.memoryMaxBytes, prometheus.GaugeValue, float64(c.provider.MaxMemoryBytes()))
+
+	// Latency stats
+	ch <- prometheus.MustNewConstMetric(c.latencySeconds, prometheus.GaugeValue, c.provider.GetLatencyP50(), "get", "0.5")
+	ch <- prometheus.MustNewConstMetric(c.latencySeconds, prometheus.GaugeValue, c.provider.GetLatencyP99(), "get", "0.99")
+	ch <- prometheus.MustNewConstMetric(c.latencySeconds, prometheus.GaugeValue, c.provider.SetLatencyP50(), "set", "0.5")
+	ch <- prometheus.MustNewConstMetric(c.latencySeconds, prometheus.GaugeValue, c.provider.SetLatencyP99(), "set", "0.99")
+	ch <- prometheus.MustNewConstMetric(c.latencySeconds, prometheus.GaugeValue, c.provider.CmdLatencyP50(), "cmd", "0.5")
+	ch <- prometheus.MustNewConstMetric(c.latencySeconds, prometheus.GaugeValue, c.provider.CmdLatencyP99(), "cmd", "0.99")
+
+	// Adaptive K thresholds
+	for shard, k := range c.provider.AdaptiveKThresholds() {
+		ch <- prometheus.MustNewConstMetric(c.adaptiveKThreshold, prometheus.GaugeValue, float64(k), itoa(shard))
+	}
+
+	// Network stats
+	ch <- prometheus.MustNewConstMetric(c.bytesReadTotal, prometheus.CounterValue, float64(c.provider.BytesRead()))
+	ch <- prometheus.MustNewConstMetric(c.bytesWrittenTotal, prometheus.CounterValue, float64(c.provider.BytesWritten()))
+
+	// Uptime
+	ch <- prometheus.MustNewConstMetric(c.uptimeSeconds, prometheus.GaugeValue, c.provider.UptimeSeconds())
+
+	// Redis-specific
+	if c.provider.Subsystem() == "redis" {
+		ch <- prometheus.MustNewConstMetric(c.blockedClients, prometheus.GaugeValue, float64(c.provider.BlockedClients()))
+		for cmd, count := range c.provider.CommandErrors() {
+			ch <- prometheus.MustNewConstMetric(c.commandErrorsTotal, prometheus.CounterValue, float64(count), cmd)
+		}
+	}
+
+	// Memcached-specific
+	if c.provider.Subsystem() == "memcached" {
+		ch <- prometheus.MustNewConstMetric(c.casHitsTotal, prometheus.CounterValue, float64(c.provider.CasHits()))
+		ch <- prometheus.MustNewConstMetric(c.casMissesTotal, prometheus.CounterValue, float64(c.provider.CasMisses()))
+		ch <- prometheus.MustNewConstMetric(c.deleteHitsTotal, prometheus.CounterValue, float64(c.provider.DeleteHits()))
+		ch <- prometheus.MustNewConstMetric(c.deleteMissesTotal, prometheus.CounterValue, float64(c.provider.DeleteMisses()))
+	}
+
+}
+
+// itoa converts an int to a string.
+func itoa(i int) string {
+	return strconv.Itoa(i)
+}
