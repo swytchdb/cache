@@ -10,18 +10,49 @@ Underneath, it's not Redis. Every mutation produces an *effect* that carries poi
 
 That's the whole trick. Replication has no leaders because there's nothing to elect. Merges need no coordination because the dependency graph orders them deterministically. Consistency comes from physics.
 
+## Install
+
+```bash
+# macOS / Linux (Homebrew)
+brew tap swytchdb/tap
+brew install swytch
+
+# macOS / Linux (curl)
+curl -fsSL https://getswytch.com/scripts/install.sh | sh
+
+# Windows (PowerShell)
+iwr -useb https://getswytch.com/scripts/install.ps1 | iex
+```
+
+Or pull the container:
+
+```bash
+docker pull ghcr.io/swytchdb/swytch:latest
+```
+
+Pinning a version with the curl/iwr installers:
+
+```bash
+curl -fsSL https://getswytch.com/scripts/install.sh | SWYTCH_VERSION=v0.1.0 sh
+```
+
+```powershell
+& ([scriptblock]::Create((iwr -useb https://getswytch.com/scripts/install.ps1))) -Version v0.1.0 -AddToPath
+```
+
+Prebuilt binaries, checksums, and cosign signatures for every release are at <https://github.com/swytchdb/cache/releases>.
+
 ## Quick start
 
 ```bash
-go build -o swytch .
-./swytch redis
+swytch redis
 redis-cli -p 6379
 ```
 
 For sidecar deployments, talk to it over a Unix socket. No TCP overhead, no listener exposed:
 
 ```bash
-./swytch redis --unixsocket /tmp/swytch.sock --bind ""
+swytch redis --unixsocket /tmp/swytch.sock --bind ""
 ```
 
 ```python
@@ -34,21 +65,21 @@ r.set("hello", "world")
 
 ```bash
 # Custom port and memory limit
-./swytch redis --port 6380 --maxmemory 256mb --bind 0.0.0.0
+swytch redis --port 6380 --maxmemory 256mb --bind 0.0.0.0
 
 # TLS (client-facing)
-./swytch redis --tls-cert-file server.crt --tls-key-file server.key
+swytch redis --tls-cert-file server.crt --tls-key-file server.key
 
 # mTLS (require client certs)
-./swytch redis --tls-cert-file server.crt --tls-key-file server.key --tls-ca-cert-file ca.crt
+swytch redis --tls-cert-file server.crt --tls-key-file server.key --tls-ca-cert-file ca.crt
 
 # Metrics and tracing
-./swytch redis --metrics-port 9090 --otel-endpoint localhost:4318
+swytch redis --metrics-port 9090 --otel-endpoint localhost:4318
 ```
 
-`./swytch redis -h` for the full list.
+`swytch redis -h` for the full list.
 
-### Building
+### Building from source
 
 ```bash
 just build              # development
@@ -68,7 +99,7 @@ Start more than one node and they cluster. No leader election, no quorum config,
 Generate a cluster passphrase. This is the only piece of trust shared between nodes:
 
 ```bash
-./swytch gen-passphrase
+swytch gen-passphrase
 # YUa6WXJDsloKgx4BQWV2edOiH3U2Ym4O5VLR1jrVvO4
 ```
 
@@ -76,10 +107,10 @@ Point each node at a DNS name that resolves to the cluster:
 
 ```bash
 # Node 1
-./swytch redis --cluster-passphrase "YUa6..." --join my-cache.local
+swytch redis --cluster-passphrase "YUa6..." --join my-cache.local
 
 # Node 2
-./swytch redis --cluster-passphrase "YUa6..." --join my-cache.local
+swytch redis --cluster-passphrase "YUa6..." --join my-cache.local
 ```
 
 That's the setup. Nodes find each other through DNS, form a cluster over QUIC+mTLS, replicate from there. The passphrase derives a shared CA; nodes generate ephemeral leaf certificates on startup. Nothing to distribute, nothing to rotate.
