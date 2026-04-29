@@ -1,0 +1,7 @@
+FROM scratch
+
+COPY --from=alpine:3 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+COPY swytch /swytch
+
+ENTRYPOINT ["/swytch"]

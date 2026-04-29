@@ -1,0 +1,166 @@
+version: 2
+
+project_name: swytch
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: swytch
+    main: .
+    binary: swytch
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - readme.md
+      - LICENSE*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+sboms:
+  - artifacts: archive
+
+dockers:
+  - id: swytch-amd64
+    use: buildx
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-amd64'
+    dockerfile: Dockerfile.goreleaser
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --label=org.opencontainers.image.title={{ .ProjectName }}
+      - --label=org.opencontainers.image.description=Swytch distributed cache and database
+      - --label=org.opencontainers.image.url=https://github.com/swytchdb/cache
+      - --label=org.opencontainers.image.source=https://github.com/swytchdb/cache
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.licenses=AGPL-3.0-or-later
+
+  - id: swytch-arm64
+    use: buildx
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-arm64'
+    dockerfile: Dockerfile.goreleaser
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.title={{ .ProjectName }}
+      - --label=org.opencontainers.image.description=Swytch distributed cache and database
+      - --label=org.opencontainers.image.url=https://github.com/swytchdb/cache
+      - --label=org.opencontainers.image.source=https://github.com/swytchdb/cache
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.licenses=AGPL-3.0-or-later
+
+docker_manifests:
+  - name_template: 'ghcr.io/swytchdb/swytch:{{ .Version }}'
+    image_templates:
+      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-amd64'
+      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-arm64'
+  - name_template: 'ghcr.io/swytchdb/swytch:latest'
+    image_templates:
+      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-amd64'
+      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-arm64'
+
+signs:
+  - cmd: cosign
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - --yes
+    artifacts: checksum
+    output: true
+
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    args:
+      - sign
+      - '${artifact}@${digest}'
+      - --yes
+    output: true
+
+brews:
+  - name: swytch
+    repository:
+      owner: swytchdb
+      name: homebrew-tap
+      token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
+    directory: Formula
+    homepage: 'https://github.com/swytchdb/cache'
+    description: 'Distributed cache and database with Redis, Memcached, and SQL frontends'
+    license: 'AGPL-3.0-or-later'
+    test: |
+      system "#{bin}/swytch", "--version"
+    install: |
+      bin.install "swytch"
+
+release:
+  github:
+    owner: swytchdb
+    name: cache
+  draft: false
+  prerelease: auto
+  mode: append
