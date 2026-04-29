@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      otel:
+        patterns:
+          - 'go.opentelemetry.io/*'
+      golang-x:
+        patterns:
+          - 'golang.org/x/*'
+      prometheus:
+        patterns:
+          - 'github.com/prometheus/*'
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
