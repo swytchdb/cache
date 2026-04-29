@@ -3,7 +3,7 @@ module github.com/swytchdb/cache
 go 1.26
 
 require (
-	github.com/jackc/pgx/v5 v5.9.1
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/jeroenrinzema/psql-wire v0.19.0
 	github.com/klauspost/compress v1.18.5
 	github.com/prometheus/client_golang v1.23.2
