@@ -76,50 +76,25 @@ changelog:
 sboms:
   - artifacts: archive
 
-dockers:
-  - id: swytch-amd64
-    use: buildx
-    goos: linux
-    goarch: amd64
-    image_templates:
-      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-amd64'
+dockers_v2:
+  - id: swytch
+    images:
+      - 'ghcr.io/swytchdb/swytch'
+    tags:
+      - '{{ .Version }}'
+      - '{{ if not .Prerelease }}latest{{ end }}'
+    platforms:
+      - linux/amd64
+      - linux/arm64
     dockerfile: Dockerfile.goreleaser
-    build_flag_templates:
-      - --platform=linux/amd64
-      - --label=org.opencontainers.image.title={{ .ProjectName }}
-      - --label=org.opencontainers.image.description=Swytch distributed cache and database
-      - --label=org.opencontainers.image.url=https://github.com/swytchdb/cache
-      - --label=org.opencontainers.image.source=https://github.com/swytchdb/cache
-      - --label=org.opencontainers.image.version={{ .Version }}
-      - --label=org.opencontainers.image.revision={{ .FullCommit }}
-      - --label=org.opencontainers.image.licenses=AGPL-3.0-or-later
-
-  - id: swytch-arm64
-    use: buildx
-    goos: linux
-    goarch: arm64
-    image_templates:
-      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-arm64'
-    dockerfile: Dockerfile.goreleaser
-    build_flag_templates:
-      - --platform=linux/arm64
-      - --label=org.opencontainers.image.title={{ .ProjectName }}
-      - --label=org.opencontainers.image.description=Swytch distributed cache and database
-      - --label=org.opencontainers.image.url=https://github.com/swytchdb/cache
-      - --label=org.opencontainers.image.source=https://github.com/swytchdb/cache
-      - --label=org.opencontainers.image.version={{ .Version }}
-      - --label=org.opencontainers.image.revision={{ .FullCommit }}
-      - --label=org.opencontainers.image.licenses=AGPL-3.0-or-later
-
-docker_manifests:
-  - name_template: 'ghcr.io/swytchdb/swytch:{{ .Version }}'
-    image_templates:
-      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-amd64'
-      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-arm64'
-  - name_template: 'ghcr.io/swytchdb/swytch:latest'
-    image_templates:
-      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-amd64'
-      - 'ghcr.io/swytchdb/swytch:{{ .Version }}-arm64'
+    labels:
+      org.opencontainers.image.title: '{{ .ProjectName }}'
+      org.opencontainers.image.description: 'Swytch distributed cache and database'
+      org.opencontainers.image.url: 'https://github.com/swytchdb/cache'
+      org.opencontainers.image.source: 'https://github.com/swytchdb/cache'
+      org.opencontainers.image.version: '{{ .Version }}'
+      org.opencontainers.image.revision: '{{ .FullCommit }}'
+      org.opencontainers.image.licenses: 'AGPL-3.0-or-later'
 
 signs:
   - cmd: cosign
@@ -135,27 +110,24 @@ signs:
 
 docker_signs:
   - cmd: cosign
-    artifacts: manifests
     args:
       - sign
       - '${artifact}@${digest}'
       - --yes
     output: true
 
-brews:
+homebrew_casks:
   - name: swytch
     repository:
       owner: swytchdb
       name: homebrew-tap
       token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
-    directory: Formula
+    directory: Casks
+    binaries:
+      - swytch
     homepage: 'https://github.com/swytchdb/cache'
     description: 'Distributed cache and database with Redis, Memcached, and SQL frontends'
-    license: 'AGPL-3.0-or-later'
-    test: |
-      system "#{bin}/swytch", "--version"
-    install: |
-      bin.install "swytch"
+    commit_msg_template: 'Update swytch to {{ .Tag }}'
 
 release:
   github:

@@ -1,7 +1,9 @@
 FROM scratch
 
+ARG TARGETPLATFORM
+
 COPY --from=alpine:3 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-COPY swytch /swytch
+COPY $TARGETPLATFORM/swytch /swytch
 
 ENTRYPOINT ["/swytch"]
