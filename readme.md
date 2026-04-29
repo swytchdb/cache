@@ -1,34 +1,24 @@
 # Swytch
 
-A Redis-compatible distributed cache. No leaders, no quorums, no clock sync. Drop it in, connect with `redis-cli`, and
-go.
+Redis-compatible distributed cache. No leaders, no quorums, no clock sync.
 
-## The Short Version
+## The short version
 
-Swytch is a Redis compatible server. You connect with any Redis client, you run your commands, everything works.
-Strings, hashes, sets, sorted sets, streams, pub/sub, scripting, transactions, ACLs — 463 commands across all data
-types.
+Swytch speaks the Redis wire protocol. Your existing client connects, your existing commands run. Strings, hashes, sets, sorted sets, streams, pub/sub, scripting, transactions, ACLs — 463 commands across all the data types you'd expect.
 
-The difference is underneath. Every mutation produces *effects*, not state changes. Effects encode what happened and
-what they observed. The happened-before relation isn't inferred from clocks — it's the data structure itself.
+Underneath, it's not Redis. Every mutation produces an *effect* that carries pointers to the effects it observed. The happened-before relation is encoded directly in the data, not inferred from clocks.
 
-That means replication without leaders, merges without coordination, and consistency guarantees that come from the math,
-not the infrastructure.
+That's the whole trick. Replication has no leaders because there's nothing to elect. Merges need no coordination because the dependency graph orders them deterministically. Consistency comes from physics.
 
-## Quick Start
+## Quick start
 
 ```bash
-# Build
 go build -o swytch .
-
-# Run it
 ./swytch redis
-
-# That's it. Connect with any Redis client.
 redis-cli -p 6379
 ```
 
-Embed it in your application process over a unix socket (preferred — no TCP overhead, no network attack surface):
+For sidecar deployments, talk to it over a Unix socket. No TCP overhead, no listener exposed:
 
 ```bash
 ./swytch redis --unixsocket /tmp/swytch.sock --bind ""
@@ -40,7 +30,7 @@ r = redis.Redis(unix_socket_path="/tmp/swytch.sock")
 r.set("hello", "world")
 ```
 
-### More Options
+### More options
 
 ```bash
 # Custom port and memory limit
@@ -56,7 +46,7 @@ r.set("hello", "world")
 ./swytch redis --metrics-port 9090 --otel-endpoint localhost:4318
 ```
 
-Run `./swytch redis -h` for the full list.
+`./swytch redis -h` for the full list.
 
 ### Building
 
@@ -69,23 +59,20 @@ just test-race          # tests with race detector
 just proto              # regenerate protobuf definitions
 ```
 
-## Regional Clustering
+## Regional clustering
 
-Spin up multiple nodes in the same region and they find each other. No leader election, no quorum configuration. Every
-node accepts writes. Commutative operations (counter increments, set additions) merge automatically. Conflicting
-transactions are resolved deterministically — every node independently picks the same winner using the same function on
-the same inputs. No voting required.
+Start more than one node and they cluster. No leader election, no quorum config, no static peer list. Every node accepts writes. Commutative operations (counter increments, set adds) merge automatically. Conflicting transactions resolve deterministically; every node picks the same winner because every node is running the same function on the same DAG.
 
-### Getting Started
+### Getting started
 
-Generate a shared passphrase — this is the sole trust root for the cluster:
+Generate a cluster passphrase. This is the only piece of trust shared between nodes:
 
 ```bash
 ./swytch gen-passphrase
-# outputs: YUa6WXJDsloKgx4BQWV2edOiH3U2Ym4O5VLR1jrVvO4
+# YUa6WXJDsloKgx4BQWV2edOiH3U2Ym4O5VLR1jrVvO4
 ```
 
-Point every node at a DNS name that resolves to the other nodes:
+Point each node at a DNS name that resolves to the cluster:
 
 ```bash
 # Node 1
@@ -95,18 +82,13 @@ Point every node at a DNS name that resolves to the other nodes:
 ./swytch redis --cluster-passphrase "YUa6..." --join my-cache.local
 ```
 
-That's it. Nodes discover each other via DNS, form a cluster over QUIC+mTLS, and replicate automatically. No config
-files, no static node lists, no coordination.
+That's the setup. Nodes find each other through DNS, form a cluster over QUIC+mTLS, replicate from there. The passphrase derives a shared CA; nodes generate ephemeral leaf certificates on startup. Nothing to distribute, nothing to rotate.
 
-Each node derives a shared CA from the passphrase and generates ephemeral leaf certificates on startup. Nodes
-authenticate each other via mTLS over QUIC — no manual certificate distribution required.
+### DNS compatibility
 
-### DNS Compatibility
+`--join` takes any DNS name. SRV records win if present (host:port per entry); falls back to A/AAAA records combined with `--cluster-port`.
 
-The `--join` flag accepts any DNS name. SRV records are tried first (host:port per entry), falling back to A/AAAA
-records combined with `--cluster-port`.
-
-| Environment               | What DNS returns               | How it works         |
+| Environment               | What DNS returns               | How it resolves      |
 |---------------------------|--------------------------------|----------------------|
 | Consul                    | SRV with host:port per service | SRV                  |
 | K8s headless service      | A record per pod IP            | A + cluster port     |
@@ -114,8 +96,7 @@ records combined with `--cluster-port`.
 | Docker Compose            | A record per container         | A + cluster port     |
 | Manual `/etc/hosts`       | A record                       | A + cluster port     |
 
-DNS is only used for bootstrap. Once joined, nodes discover peers through membership effects. DNS is re-resolved only
-if a node loses all peers and needs to re-bootstrap.
+DNS is bootstrap-only. Once a node has joined, peer discovery is in the effects layer. The only time DNS gets re-resolved is if a node loses every peer and needs to bootstrap again.
 
 ### Docker Compose
 
@@ -164,109 +145,79 @@ spec:
 
 ### Membership
 
-Membership is not a special subsystem — it uses the same effects engine as all other data. Each node periodically
-writes a heartbeat effect on an internal key. Crashed nodes expire after 30 seconds. Graceful shutdowns remove the
-entry immediately. You can inspect membership with any Redis client:
+Membership isn't a separate subsystem. It runs on the same effects engine as everything else: nodes write heartbeat effects to an internal key, crashed nodes expire after 30s, graceful shutdowns drop the entry immediately. Inspect it with any Redis client:
 
 ```bash
 redis-cli HGETALL __swytch:members
 ```
 
-## How It Works
+## How it works
 
-If you just want to use it, you can stop reading here. The rest is for people who want to know why it works.
+The rest of this is for engineers who want to understand the model.
 
-### The Causal Effect Log
+### The causal effect log
 
-In 1978, Lamport described two approaches to ordering events in distributed systems. Explicitly encode what each
-operation observed, or use logical clocks to approximate that ordering. The field chose clocks. Forty-eight years of
-increasingly sophisticated clocks — vector clocks, version vectors, hybrid logical clocks — all trying to infer
-causality from timestamps.
+Lamport's 1978 paper laid out two ways to order events in a distributed system: encode what each operation observed, or use logical clocks to approximate the ordering. The field went with clocks. Forty-some years of increasingly clever clocks since (vector clocks, version vectors, hybrid logical clocks) all variations on inferring causality from timestamps.
 
-Swytch chose the other path.
+Swytch picked the other path.
 
-Every mutation produces effects. Each effect carries a key identifier, dependency references to prior effects it
-observed, a semantic tag, and a node identifier. Effects are append-only and immutable. Each node mints addresses in its
-own namespace — `(NodeID, Sequence)` — so writes never collide. No coordination required.
+Each mutation produces an effect: a key identifier, dependency pointers to the prior effects observed, a semantic tag, a node identifier. Effects are immutable and append-only. Each node mints addresses in its own namespace as `(NodeID, Sequence)`, so nothing collides without coordination.
 
-The dependency DAG *is* the ordering. If effect B depends on effect A, B happened after A. If two effects share the same
-dependencies, they observed the same state. This isn't metadata bolted on after the fact. It's the structure itself.
+The dependency DAG is the ordering. Effect B depends on A means B happened after A. Two effects sharing the same dependencies observed the same state. None of this is metadata wrapping the real data; it *is* the data.
 
-### Deterministic Fork-Choice
+### Deterministic fork-choice
 
-When multiple transactions race against the same causal base, a deterministic rule picks the winner: each commit
-computes `H = hash(NodeID || HLC)`, lowest H wins. Every node applies the same function to the same inputs, gets the
-same result. Combined with a bounded *horizon wait* — like Spanner's commit-wait but using software clocks only — this
-gives exactly-once transaction semantics without voting.
+When transactions race against the same causal base, fork-choice picks a winner deterministically: each commit computes `H = hash(NodeID || HLC)`, lowest H wins. The reason this is valid is straight relativity: events that are spacelike-separated in the causal graph have no true order, so any deterministic function over the DAG is as correct as any other. Hash is just a function we picked because it's symmetric, cheap, and computable from the same inputs everywhere. Same function, same inputs, same answer at every node. A bounded *horizon wait* (Spanner's commit-wait, but with software clocks rather than atomic ones) gives you exactly-once transaction semantics without a vote.
 
 ### Light Cone Consistency
 
-From any node's perspective:
+From any node:
 
-- **Read-your-writes.** Your effects are visible to you immediately.
-- **Monotonic reads.** You never go backward in causal time.
-- **Causal consistency.** If A caused B, and you see B, you've already seen A.
-- **Bounded convergence.** Any effect at node X reaches node Y within `d(X,Y) + e`, where `d` is network delay.
-- **Deterministic convergence.** All nodes observing the same tip set produce bit-identical state.
+- **Read-your-writes.** Effects you wrote are immediately visible on the node you wrote them on.
+- **Monotonic reads.** Causal time only moves forward.
+- **Causal consistency.** If A caused B and you've seen B, you've already seen A.
+- **Bounded convergence.** Any effect at node X reaches node Y within `d(X,Y) + e`, where `d` is the network delay between them.
+- **Deterministic convergence.** Two nodes observing the same tip set produce bit-identical state.
 
-No unbounded "eventual" window. Convergence time is propagation delay. Full stop.
+Convergence time is propagation delay. There's no longer-tail "eventual" window beyond that.
 
-### Adaptive Serialization
+### Safe and holographic modes
 
-Low contention: nodes race, fork-choice picks a winner, zero coordination cost. High contention on a hot key: after a
-few failed commits, a node emits a serialization request. Contending nodes route through a dynamically-selected leader (
-chosen to minimize worst-case latency to all contenders) until contention subsides. Then the leader dissolves.
+**Safe mode** (default): commutative operations continue on both sides of a partition. Transactions block. On reconnect, commutative effects auto-merge; no duplicate commits, no transactions lost.
 
-This happens per-key, at runtime, automatically. One hot list serializes while millions of other keys stay fully
-distributed.
+**Holographic mode** keeps everything writing on both sides — transactions included. Each partition is a complete, internally consistent database. On reconnect, commits that happened on only one side merge through fork-choice; commits that happened on both sides surface as holographic divergence, with both histories preserved in the DAG for application review. Holographic mode is implemented but isn't a self-service flag yet — if your workload needs it, email `holographic@getswytch.com` and we'll talk.
 
-### Safe and Holographic Modes
+## How it compares
 
-**Safe mode** (default): During a partition, commutative operations continue on both sides. Transactions block. On
-reconnect, commutative effects auto-merge. No duplicate commits, no lost transactions.
-
-**Holographic mode** (opt-in, per key prefix): Both sides of a partition keep accepting everything — including
-transactions. Each partition becomes a complete, internally consistent database. On reconnect, one-sided commits merge
-via fork-choice. Both-sided commits are flagged for application review. The causal DAG preserves both histories. Nothing
-is silently discarded.
-
-The choice is per key-range, changeable at runtime.
-
-## How It Compares
-
-| Property                  | Redis Cluster | Raft/Paxos   | CRDTs                       | Swytch               |
-|---------------------------|---------------|--------------|-----------------------------|----------------------|
-| Exactly-once transactions | No            | Yes          | No                          | Yes                  |
-| No static leader          | No            | No           | Yes                         | Yes                  |
-| No per-write coordination | No            | No           | Yes                         | Yes                  |
-| Partition behavior        | Block         | Block        | Continue (commutative only) | Configurable per-key |
-| Clock requirements        | None          | Synchronized | Vector/logical              | HLC (software only)  |
+| Property                  | Redis Cluster | Raft / Paxos | Redis Enterprise            | Swytch              |
+|---------------------------|---------------|--------------|-----------------------------|---------------------|
+| Exactly-once transactions | No            | Yes          | No                          | Yes                 |
+| No static leader          | No            | No           | Yes                         | Yes                 |
+| No per-write coordination | No            | No           | Yes                         | Yes                 |
+| Partition behavior        | Block         | Block        | Continue (commutative only) | Configurable per-key|
+| Clock requirements        | None          | Synchronized | Vector / logical            | HLC (software only) |
 
 ## Internals
 
 ### CloxCache (L0 — RAM)
 
-Lock-free, sharded, adaptive in-memory cache. Items with access frequency above a learned threshold are protected from
-eviction. The threshold adapts online per-shard — no manual tuning.
+Lock-free, sharded, adaptive in-memory cache. Items above a learned access-frequency threshold are protected from eviction; the threshold adapts online per-shard. No manual tuning, no `--maxmemory-policy` flag.
 
-### Effects Engine
+### Effects engine
 
-Causal effect log with DAG-based dependency tracking, horizon wait for transactional commits, and adaptive
-serialization. Formally verified via TLA+ (`CausalEffectLog.tla`, `ExactlyOnce.tla`).
+The causal effect log: DAG dependency tracking and horizon wait for transactional commits. Core safety properties verified in TLA+ (`CausalEffectLog.tla`, `ExactlyOnce.tla`).
 
 ### Transport
 
-QUIC (RFC 9000) for peer-to-peer communication. Bidirectional streams for effect replication. mTLS for peer
-authentication, derived from a shared passphrase (HKDF-SHA256 + Ed25519).
+QUIC (RFC 9000) for peer-to-peer. Bidirectional streams for effect replication. mTLS for peer auth, derived from the cluster passphrase via HKDF-SHA256 + Ed25519.
 
 ### Observability
 
-Prometheus metrics: connections, per-command counts, cache hits/misses/evictions, memory, latency percentiles (p50/p99),
-adaptive thresholds, network I/O. OpenTelemetry tracing via OTLP HTTP with trace context injected into structured logs.
+Prometheus metrics for connections, per-command counts, cache hits/misses/evictions, memory, latency percentiles (p50/p99), adaptive thresholds, network I/O. OpenTelemetry tracing over OTLP HTTP, with trace context injected into structured logs.
 
-## Configuration Reference
+## Configuration reference
 
-### Server Flags
+### Server flags
 
 | Flag            | Default   | Description                             |
 |-----------------|-----------|-----------------------------------------|
@@ -283,7 +234,7 @@ adaptive thresholds, network I/O. OpenTelemetry tracing via OTLP HTTP with trace
 | `--debug`       | false     | Debug logging                           |
 | `--log-format`  | text      | Log format: text or json                |
 
-### Client TLS Flags
+### Client TLS flags
 
 | Flag                 | Default | Description           |
 |----------------------|---------|-----------------------|
@@ -292,7 +243,7 @@ adaptive thresholds, network I/O. OpenTelemetry tracing via OTLP HTTP with trace
 | `--tls-ca-cert-file` |         | CA cert for mTLS      |
 | `--tls-min-version`  | 1.2     | Minimum TLS version   |
 
-### Cluster Flags
+### Cluster flags
 
 | Flag                    | Default      | Description                                        |
 |-------------------------|--------------|----------------------------------------------------|
@@ -301,7 +252,7 @@ adaptive thresholds, network I/O. OpenTelemetry tracing via OTLP HTTP with trace
 | `--cluster-port`        | port + 1000  | QUIC port for cluster traffic                      |
 | `--cluster-advertise`   | auto-detect  | Address:port this node advertises to peers         |
 
-### Observability Flags
+### Observability flags
 
 | Flag              | Default | Description                          |
 |-------------------|---------|--------------------------------------|
@@ -321,12 +272,8 @@ adaptive thresholds, network I/O. OpenTelemetry tracing via OTLP HTTP with trace
 
 ## Research
 
-- **"Causal Effect Log and Exactly-Once Transactions"** — Landers & Kramer, 2026. The construction: addressable
-  immutability, deterministic fork-choice, light cone consistency. Core safety properties verified via TLA+.
-
-- **"Split Brain as the Inevitable Cost of Leaderless Transactions"** — Landers & Kramer, 2026. Proves that holographic
-  divergence is unavoidable for any leaderless, available, quorum-free protocol with exactly-one winner selection.
+Forthcoming.
 
 ## License
 
-AGPL-3.0. See source file headers.
+AGPL-3.0. See source file headers. Commercial licensing available; email `hello@getswytch.com`.
