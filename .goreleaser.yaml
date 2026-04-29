@@ -116,18 +116,21 @@ docker_signs:
       - --yes
     output: true
 
-homebrew_casks:
+brews:
   - name: swytch
     repository:
       owner: swytchdb
       name: homebrew-tap
       token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
-    directory: Casks
-    binaries:
-      - swytch
+    directory: Formula
     homepage: 'https://github.com/swytchdb/cache'
     description: 'Distributed cache and database with Redis, Memcached, and SQL frontends'
+    license: 'AGPL-3.0-or-later'
     commit_msg_template: 'Update swytch to {{ .Tag }}'
+    test: |
+      system "#{bin}/swytch", "--version"
+    install: |
+      bin.install "swytch"
 
 release:
   github:
