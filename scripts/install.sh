@@ -101,10 +101,12 @@ if [ -z "$dest_dir" ]; then
 fi
 mkdir -p "$dest_dir" 2>/dev/null || true
 
-if [ -w "$dest_dir" ]; then
+if [ -d "$dest_dir" ] && [ -w "$dest_dir" ]; then
     mv "$tmp/$BIN" "$dest_dir/$BIN"
 else
     info "installing to $dest_dir requires sudo"
+    command -v sudo >/dev/null 2>&1 || err "sudo not available; create $dest_dir with appropriate permissions or set SWYTCH_INSTALL to a writable directory"
+    sudo mkdir -p "$dest_dir"
     sudo mv "$tmp/$BIN" "$dest_dir/$BIN"
 fi
 

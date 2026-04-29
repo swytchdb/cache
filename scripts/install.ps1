@@ -42,8 +42,7 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
 
 if (-not $Version) {
     Info 'resolving latest release'
-    $latest = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
-    $Version = $latest.tag_name
+    $latest = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"    $Version = $latest.tag_name
     if (-not $Version) { Fail 'could not determine latest version' }
 }
 $versionNum = $Version.TrimStart('v')
@@ -60,15 +59,14 @@ New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 try {
     Info "downloading $archive"
     $archivePath = Join-Path $tmp $archive
-    Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
-
+    Invoke-WebRequest -Uri $url -OutFile $archivePath
     if (-not $SkipVerify) {
         Info 'verifying checksum'
         $sumsPath = Join-Path $tmp 'checksums.txt'
-        Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath -UseBasicParsing
-
-        $expected = Select-String -Path $sumsPath -Pattern ([regex]::Escape($archive)) |
-            ForEach-Object { ($_.Line -split '\s+')[0] } |
+        Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath
+        $pattern = '^([0-9a-fA-F]+)\s+' + [regex]::Escape($archive) + '$'
+        $expected = Select-String -Path $sumsPath -Pattern $pattern |
+            ForEach-Object { $_.Matches[0].Groups[1].Value } |
             Select-Object -First 1
         if (-not $expected) { Fail "no checksum entry for $archive" }
 
