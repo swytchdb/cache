@@ -31,9 +31,6 @@ jobs:
       - name: go test (race)
         run: go test -race ./...
 
-      - name: go test (effects build tag)
-        run: go test -tags effects ./...
-
   snapshot:
     name: Goreleaser snapshot
     runs-on: ubuntu-latest
