@@ -35,6 +35,7 @@ import (
 	"github.com/swytchdb/cache/beacon"
 	"github.com/swytchdb/cache/metrics"
 	"github.com/swytchdb/cache/redis/shared"
+	"github.com/swytchdb/cache/telemetry"
 	"github.com/swytchdb/cache/tracing"
 )
 
@@ -83,6 +84,10 @@ func Main(args []string) {
 	otelEndpoint := fs.String("otel-endpoint", "", "OTLP HTTP endpoint for tracing (e.g., localhost:4318). Empty = disabled")
 	otelInsecure := fs.Bool("otel-insecure", false, "Use HTTP instead of HTTPS for OTLP endpoint")
 
+	// Telemetry
+	noTelemetry := fs.Bool("no-telemetry", false, "Disable anonymous usage telemetry")
+	inviteMe := fs.String("invite-me", "", "Register as an early adopter with your email (overrides --no-telemetry)")
+
 	// Effects-specific flags (only present in effects builds)
 	effectsCfg := RegisterEffectsFlags(fs)
 
@@ -115,6 +120,10 @@ TLS options:
   --tls-ca-cert-file=<path> Path to CA certificate for client verification (mTLS)
   --tls-min-version=<ver>   Minimum TLS version: 1.0, 1.1, 1.2, 1.3 (default: 1.2)
 
+Telemetry:
+  --no-telemetry            Disable anonymous usage telemetry
+  --invite-me=<email>       Register as an early adopter (overrides --no-telemetry)
+
 Swytch extensions:
   --pprof=<addr>            Enable pprof profiling on this address (e.g., localhost:6060)
   --metrics-port=<port>     Enable Prometheus metrics on this port (e.g., 9090)
@@ -144,6 +153,9 @@ Examples:
 		fmt.Printf("swytch redis %s\n", Version)
 		return
 	}
+
+	telemetryEnabled := !*noTelemetry || *inviteMe != ""
+	telemetry.PrintBanner(telemetryEnabled, *inviteMe)
 
 	// Configure structured logging
 	var logLevel slog.Level
@@ -265,13 +277,45 @@ Examples:
 	}
 
 	// Start license heartbeat if license is provided
-	// Start metrics server if enabled (before signal handler so we can shut it down)
+	// Metrics adapter is always created (lightweight wrapper); metrics
+	// server only starts when --metrics-port is set.
+	adapter := NewMetricsAdapter(server.Stats(), server.Handler(), maxMemory)
 	var metricsServer *metrics.Server
 	if *metricsPort > 0 {
-		adapter := NewMetricsAdapter(server.Stats(), server.Handler(), maxMemory)
 		metricsServer = metrics.NewServer(adapter, *metricsPort)
 		metricsServer.StartAsync()
 		slog.Info("Prometheus metrics server started", "port", *metricsPort, "path", "/metrics")
+	}
+
+	// Start telemetry client
+	var telemetryCancel context.CancelFunc
+	var telemetryDone chan struct{}
+	if telemetryEnabled && activeRuntime != nil {
+		telCtx, cancel := context.WithCancel(context.Background())
+		telemetryCancel = cancel
+		nodeID := fmt.Sprintf("%x", uint64(activeRuntime.Engine.NodeID()))
+		tc := telemetry.New(telemetry.Config{
+			NodeID:       nodeID,
+			Version:      Version,
+			Features:     "redis",
+			AdopterEmail: *inviteMe,
+			StatsFunc: func() telemetry.HeartbeatStats {
+				nodes := 1
+				if activeRuntime != nil && activeRuntime.PeerManager != nil {
+					nodes = len(activeRuntime.PeerManager.PeerIDs()) + 1
+				}
+				return telemetry.HeartbeatStats{
+					Nodes:         nodes,
+					UptimeSeconds: int(adapter.UptimeSeconds()),
+					MemoryAvail:   adapter.MaxMemoryBytes(),
+					MemoryUsage:   adapter.MemoryBytes(),
+					HitCount:      adapter.CacheHits(),
+					MissNoData:    adapter.CacheMisses(),
+				}
+			},
+		})
+		telemetryDone = make(chan struct{})
+		go func() { defer close(telemetryDone); tc.Run(telCtx) }()
 	}
 
 	// Handle signals
@@ -281,6 +325,10 @@ Examples:
 	go func() {
 		<-sigCh
 		slog.Info("Shutting down")
+		if telemetryCancel != nil {
+			telemetryCancel()
+			<-telemetryDone
+		}
 		if metricsServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

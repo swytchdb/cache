@@ -33,7 +33,10 @@ import (
 	"time"
 
 	"github.com/swytchdb/cache/beacon"
+	"github.com/swytchdb/cache/telemetry"
 )
+
+var Version = "dev"
 
 // Run parses CLI arguments and runs the SQL server until terminated by
 // SIGINT/SIGTERM. When a cluster passphrase is supplied the server
@@ -61,6 +64,10 @@ func Run(args []string) error {
 	maxMemoryStr := fs.String("maxmemory", "64mb",
 		"Max effects-engine memory (e.g. 256mb, 4gb)")
 
+	// Telemetry
+	noTelemetry := fs.Bool("no-telemetry", false, "Disable anonymous usage telemetry")
+	inviteMe := fs.String("invite-me", "", "Register as an early adopter with your email (overrides --no-telemetry)")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -68,6 +75,9 @@ func Run(args []string) error {
 	if *clusterPassphrase == "" && *joinAddr != "" {
 		return fmt.Errorf("--join requires --cluster-passphrase")
 	}
+
+	telemetryEnabled := !*noTelemetry || *inviteMe != ""
+	telemetry.PrintBanner(telemetryEnabled, *inviteMe)
 
 	maxMemoryBytes, maxMemoryPct, err := beacon.ParseMemoryLimit(*maxMemoryStr)
 	if err != nil {
@@ -136,13 +146,50 @@ func Run(args []string) error {
 		return errors.Join(err, rt.Stop())
 	}
 
+	// Start telemetry client
+	var telemetryCancel context.CancelFunc
+	var telemetryDone chan struct{}
+	if telemetryEnabled {
+		telCtx, cancel := context.WithCancel(context.Background())
+		telemetryCancel = cancel
+		startTime := time.Now()
+		nodeID := fmt.Sprintf("%x", uint64(rt.Engine.NodeID()))
+		tc := telemetry.New(telemetry.Config{
+			NodeID:       nodeID,
+			Version:      Version,
+			Features:     "sql",
+			AdopterEmail: *inviteMe,
+			StatsFunc: func() telemetry.HeartbeatStats {
+				nodes := 1
+				if rt.PeerManager != nil {
+					nodes = len(rt.PeerManager.PeerIDs()) + 1
+				}
+				return telemetry.HeartbeatStats{
+					Nodes:         nodes,
+					UptimeSeconds: int(time.Since(startTime).Seconds()),
+				}
+			},
+		})
+		telemetryDone = make(chan struct{})
+		go func() { defer close(telemetryDone); tc.Run(telCtx) }()
+	}
+
+	stopTelemetry := func() {
+		if telemetryCancel != nil {
+			telemetryCancel()
+			<-telemetryDone
+		}
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
+		stopTelemetry()
 	case err := <-server.Done():
+		stopTelemetry()
 		if err != nil {
 			return errors.Join(
 				fmt.Errorf("server exited: %w", err),
