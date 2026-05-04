@@ -171,7 +171,7 @@ func Run(args []string) error {
 			},
 		})
 		telemetryDone = make(chan struct{})
-		go func() { tc.Run(telCtx); close(telemetryDone) }()
+		go func() { defer close(telemetryDone); tc.Run(telCtx) }()
 	}
 
 	stopTelemetry := func() {

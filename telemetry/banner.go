@@ -28,6 +28,6 @@ func PrintBanner(enabled bool, adopterEmail string) {
 		fmt.Println("Telemetry: disabled. The community dashboard at https://stats.getswytch.com relies on anonymous metrics — consider enabling next time to help.")
 	}
 	if adopterEmail != "" {
-		fmt.Printf("Adopter email registered: %s.\n", adopterEmail)
+		fmt.Println("Early adopter email registered.")
 	}
 }

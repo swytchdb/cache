@@ -21,6 +21,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"log/slog"
 	"net/http"
@@ -66,6 +67,10 @@ type Client struct {
 }
 
 func New(cfg Config) *Client {
+	sf := cfg.StatsFunc
+	if sf == nil {
+		sf = func() HeartbeatStats { return HeartbeatStats{} }
+	}
 	return &Client{
 		nodeID:            cfg.NodeID,
 		version:           cfg.Version,
@@ -73,7 +78,7 @@ func New(cfg Config) *Client {
 		goarch:            runtime.GOARCH,
 		features:          cfg.Features,
 		adopterEmail:      cfg.AdopterEmail,
-		statsFunc:         cfg.StatsFunc,
+		statsFunc:         sf,
 		httpClient:        &http.Client{Timeout: 5 * time.Second},
 		endpoint:          defaultEndpoint,
 		heartbeatInterval: 5 * time.Minute,
@@ -144,7 +149,7 @@ func (c *Client) sendAdopter(ctx context.Context) {
 	params := url.Values{}
 	params.Set("ev", "early-adopter")
 	params.Set("node_id", c.nodeID)
-	params.Set("email", c.adopterEmail)
+	params.Set("email", base64.StdEncoding.EncodeToString([]byte(c.adopterEmail)))
 	c.doGet(ctx, params)
 }
 
@@ -156,10 +161,11 @@ func (c *Client) doGet(ctx context.Context, params url.Values) {
 		return
 	}
 	resp, err := c.httpClient.Do(req)
+	if resp != nil && resp.Body != nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
 	if err != nil {
 		slog.Debug("telemetry: send", "error", err)
-		return
 	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
 }

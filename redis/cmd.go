@@ -290,7 +290,7 @@ Examples:
 	// Start telemetry client
 	var telemetryCancel context.CancelFunc
 	var telemetryDone chan struct{}
-	if telemetryEnabled {
+	if telemetryEnabled && activeRuntime != nil {
 		telCtx, cancel := context.WithCancel(context.Background())
 		telemetryCancel = cancel
 		nodeID := fmt.Sprintf("%x", uint64(activeRuntime.Engine.NodeID()))
@@ -315,7 +315,7 @@ Examples:
 			},
 		})
 		telemetryDone = make(chan struct{})
-		go func() { tc.Run(telCtx); close(telemetryDone) }()
+		go func() { defer close(telemetryDone); tc.Run(telCtx) }()
 	}
 
 	// Handle signals

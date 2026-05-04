@@ -21,6 +21,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -219,8 +220,9 @@ func TestAdopterEvent(t *testing.T) {
 	if ev.Get("node_id") != "bbb" {
 		t.Errorf("expected node_id=bbb, got %q", ev.Get("node_id"))
 	}
-	if ev.Get("email") != "test@example.com" {
-		t.Errorf("expected email=test@example.com, got %q", ev.Get("email"))
+	wantEmail := base64.StdEncoding.EncodeToString([]byte("test@example.com"))
+	if ev.Get("email") != wantEmail {
+		t.Errorf("expected email=%s, got %q", wantEmail, ev.Get("email"))
 	}
 }
 
@@ -274,8 +276,9 @@ func TestInviteMeOverride(t *testing.T) {
 			hasStartup = true
 		case "early-adopter":
 			hasAdopter = true
-			if r.Get("email") != "early@adopter.com" {
-				t.Errorf("expected email=early@adopter.com, got %q", r.Get("email"))
+			wantEmail := base64.StdEncoding.EncodeToString([]byte("early@adopter.com"))
+			if r.Get("email") != wantEmail {
+				t.Errorf("expected email=%s, got %q", wantEmail, r.Get("email"))
 			}
 		}
 	}
@@ -370,5 +373,47 @@ func TestFinalHeartbeatOnShutdown(t *testing.T) {
 	}
 	if !hasHeartbeat {
 		t.Error("expected a final heartbeat on shutdown")
+	}
+}
+
+func TestNilStatsFuncDoesNotPanic(t *testing.T) {
+	rec := &recorder{}
+	ts := httptest.NewServer(rec.handler())
+	defer ts.Close()
+
+	c := newTestClient(ts, Config{
+		NodeID:  "hhh",
+		Version: "1.0.0",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); c.Run(ctx) }()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Run did not stop within 100ms of ctx cancel")
+	}
+
+	reqs := rec.get()
+	hasStartup := false
+	hasHeartbeat := false
+	for _, r := range reqs {
+		switch r.Get("ev") {
+		case "startup":
+			hasStartup = true
+		case "heartbeat":
+			hasHeartbeat = true
+		}
+	}
+	if !hasStartup {
+		t.Error("expected startup event even with nil StatsFunc")
+	}
+	if !hasHeartbeat {
+		t.Error("expected final heartbeat even with nil StatsFunc")
 	}
 }
